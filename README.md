@@ -28,12 +28,6 @@ cmake ..
 make
 ```
 
-### Run Performance Tests
-
-```bash
-./test_performance.sh
-```
-
 ## Code Organization
 
 - **executor/**: Core execution engines
