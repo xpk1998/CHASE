@@ -1,8 +1,8 @@
-# CHASE - VLDB Artifact
+# CHASE - Artifact
 
 CHASE is a high-performance blockchain execution engine with parallel execution architecture for efficient transaction processing.
 
-## VLDB Artifact Minimization
+## Artifact Minimization
 
 **Retained Core Components:**
 - ✓ executor/kdg/  - KDG execution engine algorithms
