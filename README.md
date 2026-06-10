@@ -2,9 +2,8 @@
 
 **CHASE** (Conflict-aware High-performance Adaptive Scheduling Engine) is a blockchain execution system that combines deterministic concurrency control with **CDS** (Conflict Detection Scheduling).
 
-The execution engine builds on ideas from the SC '24 paper [*Toward High-Performance Blockchain System by Blurring the Line between Ordering and Execution*](https://dl.acm.org/doi/10.1145/3650212.3652144) (originally published as OptME), extended with CDS two-zone scheduling and Seer-accelerated pre-execution.
 
-## Full stack (Tusk + CHASE + RocksDB)
+## Full stack
 
 The `sslab-execution-stack` crate wires the three layers together:
 
@@ -57,50 +56,6 @@ let stack = ChaseStack::open("/path/to/rocksdb", concurrency_level)?;
 let execution_state = stack.into_execution_state();
 // Pass execution_state to narwhal_executor::Executor::spawn(...)
 ```
-
-### Seer-accelerated simulation (VLDB 2025)
-
-CHASE's pre-execution phase (RW-set extraction for KDG construction) uses [Seer](https://www.vldb.org/pvldb/vol18/p822-xiao.pdf)-inspired acceleration:
-
-| Component | Role |
-|-----------|------|
-| **PreExecutionCache** | Reuse prior simulation RW sets / effects (checkpoint fast-path) |
-| **VarTable + Perceptron** | Two-level branch-direction learning across transactions |
-| **Contract-locality ordering** | Warm predictor before parallel simulation |
-
-```bash
-export CHASE_USE_SEER=1              # default on; set 0 to disable
-export CHASE_SEER_CACHE=1            # pre-execution result cache
-export CHASE_SEER_PERCEPTRON=1       # branch predictor learning
-export CHASE_SEER_LOCALITY=1         # sort txs by contract for warmup
-```
-
-Reference: [SeerEVM](https://github.com/CGCL-codes/SeerEVM). Fine-grained EVM `JUMPI` hooks will be integrated in `crates/chase-evm` in a follow-up.
-
-### EVM fork (`chase-evm`)
-
-The CHASE EVM interpreter is vendored at `crates/chase-evm` (lineage: `optme-evm` @ `d81889d`). The workspace pins it via a path dependency instead of the legacy `optme-evm` git URL.
-
-### Pull request merge order
-
-Three feature branches stack on `main`; each later branch contains all commits from earlier ones:
-
-```text
-main
- └── cursor/cds-scheduling-cb3b     (#4 — CDS two-zone scheduling)
-      └── cursor/seer-integration-cb3b (#5 — Seer-accelerated simulation)
-           └── cursor/chase-rename-cb3b (#6 — OptME → CHASE rename + chase-evm)
-```
-
-| PR | Branch | Scope |
-|----|--------|-------|
-| [#4](https://github.com/xpk1998/optme/pull/4) | `cursor/cds-scheduling-cb3b` | CDS conflict-free + conflict zones |
-| [#5](https://github.com/xpk1998/optme/pull/5) | `cursor/seer-integration-cb3b` | Seer cache / perceptron / locality |
-| [#6](https://github.com/xpk1998/optme/pull/6) | `cursor/chase-rename-cb3b` | CHASE rename, `chase-evm` vendoring, docs |
-
-**Recommended:** merge **#6 only** into `main`, then close #4 and #5 as superseded (their commits are already included).
-
-**Alternative (incremental review):** merge #4 → rebase #5 onto `main` → merge #5 → rebase #6 onto `main` → merge #6. Do not merge #4 and #6 in parallel — that would duplicate commits.
 
 ### Tests
 
