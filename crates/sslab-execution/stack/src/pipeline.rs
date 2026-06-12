@@ -29,9 +29,11 @@ impl ChaseStack {
         let chase = Chase::new(evm_storage.clone(), concurrency_level);
         let execution_state = ChaseExecutionState::new(chase, storage.clone());
 
+        let ev_blp = sslab_execution_chase::EvBlpConfig::is_enabled();
         info!(
             ?db_path,
             concurrency_level,
+            ev_blp,
             last_index = storage.read().last_executed_sub_dag_index().unwrap_or(0),
             "Chase stack initialized (Tusk consensus + CHASE CDS + RocksDB)"
         );

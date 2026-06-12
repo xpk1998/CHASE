@@ -43,6 +43,14 @@ export CHASE_USE_EXECUTION=1
 # Optional: parallel execution width (default 4)
 export CHASE_CONCURRENCY_LEVEL=4
 
+# Optional: EV-BLP batch-level pipelining (P₁ Order → P₂ Exec → P₃ Commit)
+export CHASE_USE_EV_BLP=1
+export CHASE_PIPELINE_ZETA_MAX=8
+export CHASE_PIPELINE_LAMBDA2=10000000
+export CHASE_PIPELINE_LAMBDA3=67108864
+export CHASE_CACHE_L1_CAPACITY_MB=256
+export CHASE_CACHE_L2_LRU_SIZE_MB=1024
+
 # Start primary (store path is the Narwhal node store)
 narwhal-node primary -s /path/to/store ...
 ```

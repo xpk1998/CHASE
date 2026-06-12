@@ -47,8 +47,20 @@ impl<B: Backend + ApplyBackend + Clone + Default + Send + Sync + 'static> Chase<
             inner: ConcurrencyLevelManager::new(global_state, concurrency_level),
         }
     }
+
+    pub fn manager(&self) -> &ConcurrencyLevelManager<B> {
+        &self.inner
+    }
+
+    pub fn ev_blp_bridge(
+        &self,
+        store: Option<Arc<dyn crate::executor::cache::StateStore>>,
+    ) -> crate::executor::EvBlpChaseBridge<B> {
+        crate::executor::EvBlpChaseBridge::new(self.inner.clone(), store)
+    }
 }
 
+#[derive(Clone)]
 pub struct ConcurrencyLevelManager<B = DefaultBackend>
 where
     B: Backend + ApplyBackend + Clone + Default + Send + Sync + 'static,

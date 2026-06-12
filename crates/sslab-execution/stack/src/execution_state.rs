@@ -5,7 +5,7 @@ use narwhal_executor::ExecutionState;
 use narwhal_types::ConsensusOutput;
 use parking_lot::RwLock;
 use sslab_execution::executor::Executable;
-use sslab_execution_chase::Chase;
+use sslab_execution_chase::{Chase, EvBlpConfig};
 
 use crate::layered_backend::PersistableCMemoryBackend;
 use tracing::{debug, info};
@@ -46,7 +46,12 @@ impl ExecutionState for ChaseExecutionState {
         let batch_count = executable_batches.len();
         let tx_count: usize = executable_batches.iter().map(|b| b.data().len()).sum();
 
-        self.chase.execute(executable_batches).await;
+        if EvBlpConfig::is_enabled() {
+            let bridge = self.chase.ev_blp_bridge(None);
+            bridge.execute(executable_batches).await;
+        } else {
+            self.chase.execute(executable_batches).await;
+        }
 
         if let Err(err) = self
             .storage
