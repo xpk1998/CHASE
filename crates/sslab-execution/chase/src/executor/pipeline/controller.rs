@@ -74,10 +74,12 @@ impl PipelineController {
 
     /// Batch leaves a stage — update weight and trigger AIMD tick.
     pub fn on_batch_exit(&self, stage: StageId, gas_or_bytes: u64) {
-        self.w[stage.index()].fetch_sub(gas_or_bytes, Ordering::Relaxed);
+        let idx = stage.index();
+        let current = self.w[idx].load(Ordering::Relaxed);
+        self.w[idx].store(current.saturating_sub(gas_or_bytes), Ordering::Relaxed);
         {
             let mut in_flight = self.in_flight.lock();
-            in_flight[stage.index()] = in_flight[stage.index()].saturating_sub(1);
+            in_flight[idx] = in_flight[idx].saturating_sub(1);
         }
         self.tick(stage);
     }

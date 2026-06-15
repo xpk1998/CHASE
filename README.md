@@ -74,8 +74,14 @@ export RUSTFLAGS="-C linker=g++"
 # CHASE CDS + Seer unit tests
 cargo test -p sslab-execution-chase --features chase
 
+# EV-BLP executor tests
+cargo test -p sslab-execution-chase --features chase executor::
+
 # Full stack E2E (Tusk → CHASE CDS → RocksDB)
 cargo test -p sslab-execution-stack --test e2e_integration -- --test-threads=1
+
+# EV-BLP full stack E2E
+CHASE_USE_EV_BLP=1 cargo test -p sslab-execution-stack --test e2e_integration e2e_ev_blp_pipeline_execution -- --test-threads=1
 ```
 
 ## How to benchmark?

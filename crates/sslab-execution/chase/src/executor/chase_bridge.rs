@@ -7,16 +7,16 @@ use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 use super::cache::{applies_to_temp_buffer, StateStore, TempBuffer};
-use super::config::EvBlpConfig;
 use super::pipeline::{EvBlpPipeline, PipelineBatch, PipelineController, StageId};
+use super::runtime::EvBlpRuntime;
 use crate::chase_core::ConcurrencyLevelManager;
 
 /// Shared pipeline state for concurrent stage workers.
 pub struct SharedPipeline {
     pub pipeline: Arc<EvBlpPipeline>,
+    pub visibility: Arc<super::cache::L1Visibility>,
 }
 
-/// Result of P₂ execution passed to P₃.
 struct CommitWork {
     batch_id: u64,
     delta_bytes: u64,
@@ -47,30 +47,25 @@ where
         + Sync
         + 'static,
 {
-    pub fn new(manager: ConcurrencyLevelManager<B>, db: Option<Arc<dyn StateStore>>) -> Self {
-        let config = EvBlpConfig::from_env();
-        let store = db.unwrap_or_else(|| Arc::new(super::cache::InMemoryStateStore::default()));
-        let pipeline = Arc::new(EvBlpPipeline::from_config(config, store));
+    pub fn with_runtime(manager: ConcurrencyLevelManager<B>, runtime: EvBlpRuntime) -> Self {
         Self {
             manager: Arc::new(manager),
-            shared: Arc::new(SharedPipeline { pipeline }),
+            shared: Arc::new(SharedPipeline {
+                pipeline: runtime.pipeline,
+                visibility: runtime.visibility,
+            }),
         }
     }
 
-    pub fn with_store(manager: ConcurrencyLevelManager<B>, store: Arc<dyn StateStore>) -> Self {
-        let config = EvBlpConfig::from_env();
-        let pipeline = Arc::new(EvBlpPipeline::from_config(config, store));
-        Self {
-            manager: Arc::new(manager),
-            shared: Arc::new(SharedPipeline { pipeline }),
-        }
+    pub fn new(manager: ConcurrencyLevelManager<B>, db: Option<Arc<dyn StateStore>>) -> Self {
+        let store = db.unwrap_or_else(|| Arc::new(super::cache::InMemoryStateStore::default()));
+        Self::with_runtime(manager, EvBlpRuntime::new(store))
     }
 
     pub fn pipeline(&self) -> &EvBlpPipeline {
         &self.shared.pipeline
     }
 
-    /// Run batches through concurrent P₁/P₂/P₃ workers connected by channels.
     pub async fn execute(&self, batches: Vec<ExecutableEthereumBatch>) -> Vec<BatchDigest> {
         let n = batches.len();
         if n == 0 {
@@ -148,7 +143,6 @@ async fn exec_worker<B>(
         let batch_id = pipe_batch.batch_id;
         let gas_weight = pipe_batch.gas_weight;
 
-        // P₁ → P₂ handoff
         shared
             .pipeline
             .controller()
@@ -161,7 +155,8 @@ async fn exec_worker<B>(
             .on_batch_enter(StageId::Exec, gas_weight);
 
         let visible_up_to = shared.pipeline.completed_batch_id();
-        debug!(batch_id, visible_up_to, "P₂ executing batch");
+        shared.visibility.set_visible_batch(visible_up_to);
+        debug!(batch_id, visible_up_to, "P₂ executing batch with L1 overlay");
 
         let (digests, applies) = manager
             .execute_batch_with_effects(pipe_batch.batch.clone())
@@ -179,6 +174,7 @@ async fn exec_worker<B>(
         let max_records = shared.pipeline.cache_config().deltapage_max_records;
         let pages = temp_buffer.into_delta_pages(batch_id, batch_id, max_records);
         shared.pipeline.on_batch_exec_complete(batch_id, pages);
+        shared.visibility.set_visible_batch(batch_id);
 
         shared
             .pipeline

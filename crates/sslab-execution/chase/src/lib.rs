@@ -8,7 +8,10 @@ pub mod types;
 pub use {
     address_based_conflict_graph::AddressBasedConflictGraph,
     chase_core::{ConcurrencyLevelManager, Chase},
-    executor::{EvBlpChaseBridge, EvBlpConfig, EvBlpPipeline, PipelineController, TwoLevelCache},
+    executor::{
+        EvBlpChaseBridge, EvBlpConfig, EvBlpPipeline, EvBlpRuntime, CacheOverlayBackend,
+        L1Visibility, PipelineController, TwoLevelCache,
+    },
     seer::{SeerConfig, SeerContext},
     types::{SimulatedTransaction, SimulationResult},
 };

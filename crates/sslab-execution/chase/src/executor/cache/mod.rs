@@ -1,4 +1,5 @@
 mod apply_buffer;
+mod cache_overlay;
 mod delta_page;
 mod l1_cache;
 mod l2_cache;
@@ -10,6 +11,7 @@ mod two_level_cache;
 mod tests;
 
 pub use apply_buffer::{applies_delta_bytes, applies_to_temp_buffer};
+pub use cache_overlay::{CacheOverlayBackend, L1Visibility};
 pub use delta_page::{
     decode_key, decode_value, encode_key, encode_value, DeltaPage, DeltaRecord, Key, Value,
     DELTA_PAGE_MAX_RECORDS,

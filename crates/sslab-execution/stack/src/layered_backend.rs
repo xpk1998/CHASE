@@ -5,6 +5,7 @@ use evm::backend::{Apply, Backend, Basic, MemoryVicinity};
 use parking_lot::RwLock;
 use sslab_execution::evm_storage::backend::{ApplyBackend, CMemoryBackend, ConcurrentHashMap};
 use sslab_execution::evm_storage::EvmStorage;
+use sslab_execution_chase::CacheOverlayBackend;
 use tracing::error;
 
 use crate::rocksdb_store::ChaseStorage;
@@ -114,4 +115,6 @@ impl ApplyBackend for PersistableCMemoryBackend {
     }
 }
 
-pub type PersistableConcurrentEVMStorage = EvmStorage<PersistableCMemoryBackend>;
+pub type StackBackend = CacheOverlayBackend<PersistableCMemoryBackend>;
+pub type StackEvmStorage = EvmStorage<StackBackend>;
+pub type PersistableConcurrentEVMStorage = StackEvmStorage;

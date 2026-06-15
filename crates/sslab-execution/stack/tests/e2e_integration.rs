@@ -124,3 +124,39 @@ async fn e2e_tusk_consensus_to_chase_execution() {
         committed_sub_dag.sub_dag_index
     );
 }
+
+/// Full stack with EV-BLP batch-level pipelining enabled.
+#[tokio::test]
+async fn e2e_ev_blp_pipeline_execution() {
+    let _guard = ROCKSDB_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    std::env::set_var("CHASE_USE_EV_BLP", "1");
+    std::env::set_var("CHASE_PIPELINE_ZETA_MAX", "4");
+
+    let dir = tempdir().unwrap();
+    let stack = ChaseStack::open(dir.path(), 4).unwrap();
+    deploy_smallbank(&stack);
+    let storage = stack.storage.clone();
+    let execution_state = stack.into_execution_state();
+
+    let raw_batches = smallbank_json_batches(4, 2, 0.0, 80);
+    let sub_dag = tusk_commit_one();
+    let sub_dag_index = sub_dag.sub_dag_index;
+    let consensus_output = build_consensus_output(raw_batches, sub_dag);
+
+    execution_state
+        .handle_consensus_output(consensus_output)
+        .await;
+
+    assert_eq!(
+        execution_state.last_executed_sub_dag_index().await,
+        sub_dag_index
+    );
+    assert_eq!(
+        storage.read().last_executed_sub_dag_index().unwrap(),
+        sub_dag_index
+    );
+
+    std::env::remove_var("CHASE_USE_EV_BLP");
+    std::env::remove_var("CHASE_PIPELINE_ZETA_MAX");
+}

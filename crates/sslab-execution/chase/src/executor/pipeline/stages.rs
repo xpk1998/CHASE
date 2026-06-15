@@ -55,7 +55,7 @@ impl PipelineBatch {
             .data()
             .iter()
             .map(|tx| tx.gas_limit())
-            .sum();
+            .fold(0u64, |acc, g| acc.saturating_add(g));
         Self {
             batch_id,
             batch,
