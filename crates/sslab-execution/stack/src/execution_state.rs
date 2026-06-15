@@ -11,6 +11,7 @@ use crate::layered_backend::PersistableCMemoryBackend;
 use tracing::{debug, info};
 
 use crate::adapter::consensus_output_to_executable_batches;
+use crate::rocksdb_state_store::RocksDbStateStore;
 use crate::rocksdb_store::ChaseStorage;
 
 /// Narwhal [`ExecutionState`] that feeds ordered consensus output into Chase
@@ -47,7 +48,8 @@ impl ExecutionState for ChaseExecutionState {
         let tx_count: usize = executable_batches.iter().map(|b| b.data().len()).sum();
 
         if EvBlpConfig::is_enabled() {
-            let bridge = self.chase.ev_blp_bridge(None);
+            let store = std::sync::Arc::new(RocksDbStateStore::new(self.storage.clone()));
+            let bridge = self.chase.ev_blp_bridge(Some(store));
             bridge.execute(executable_batches).await;
         } else {
             self.chase.execute(executable_batches).await;

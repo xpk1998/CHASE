@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use ethers_core::types::{H160, H256};
 
 use super::delta_page::{encode_key, encode_value, DeltaPage, DELTA_PAGE_MAX_RECORDS};
@@ -66,4 +68,39 @@ fn two_level_cache_read_through_l2_and_db() {
     store.put(&key, &val).unwrap();
     cache.mark_batch_complete(0);
     assert_eq!(cache.read(&key, 0), Some(val));
+}
+
+#[test]
+fn flush_failure_retains_frozen_table() {
+    use super::delta_page::DeltaPage;
+
+    struct FailingStore;
+
+    impl super::two_level_cache::StateStore for FailingStore {
+        fn get(&self, _: &super::delta_page::Key) -> Option<super::delta_page::Value> {
+            None
+        }
+        fn put(&self, _: &super::delta_page::Key, _: &super::delta_page::Value) -> Result<(), String> {
+            Err("simulated failure".into())
+        }
+    }
+
+    let config = CacheConfig {
+        l1_capacity_bytes: 128,
+        ..CacheConfig::default()
+    };
+    let cache = TwoLevelCache::new(&config, Arc::new(FailingStore));
+
+    let mut page = DeltaPage::new(1, 1);
+    for i in 0..4u64 {
+        let key = encode_key(H160::from_low_u64_be(i), H256::from_low_u64_be(i));
+        let val = encode_value(H256::from_low_u64_be(i + 1));
+        page.push_record(key, val);
+    }
+    page.freeze();
+    cache.write_delta_pages(1, vec![page]);
+
+    assert!(!cache.l1().frozen_snapshot().is_empty());
+    assert!(cache.flush_frozen_tables().is_err());
+    assert!(!cache.l1().frozen_snapshot().is_empty());
 }

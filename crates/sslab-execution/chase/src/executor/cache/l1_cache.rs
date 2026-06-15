@@ -50,7 +50,22 @@ impl L1Cache {
         self.table_order.write().push((table_id, old_active));
     }
 
-    /// Take frozen tables pending async flush.
+    /// Snapshot of frozen tables (does not remove them).
+    pub fn frozen_snapshot(&self) -> Vec<Arc<MemIndexTable>> {
+        self.frozen_tables.read().clone()
+    }
+
+    /// Remove a successfully flushed frozen table.
+    pub fn remove_frozen_table(&self, table: &Arc<MemIndexTable>) {
+        self.frozen_tables
+            .write()
+            .retain(|t| !Arc::ptr_eq(t, table));
+        self.table_order
+            .write()
+            .retain(|(_, t)| !Arc::ptr_eq(t, table));
+    }
+
+    /// Take frozen tables pending async flush (legacy — prefer safe flush).
     pub fn take_frozen_tables(&self) -> Vec<Arc<MemIndexTable>> {
         let tables: Vec<_> = self.frozen_tables.write().drain(..).collect();
         self.table_order.write().retain(|(_, t)| {

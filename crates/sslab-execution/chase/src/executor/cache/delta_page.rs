@@ -1,6 +1,4 @@
 use ethers_core::types::{H160, H256};
-
-/// State key: account address + storage slot (32 bytes each).
 pub type Key = [u8; 32];
 pub type Value = [u8; 32];
 
@@ -77,4 +75,13 @@ pub fn encode_value(value: H256) -> Value {
 /// Decode value from 32-byte array.
 pub fn decode_value(bytes: &Value) -> H256 {
     H256::from_slice(bytes)
+}
+
+/// Decode a 32-byte key back to (address, slot).
+pub fn decode_key(key: &Key) -> (H160, H256) {
+    let mut addr_bytes = [0u8; 20];
+    addr_bytes.copy_from_slice(&key[..20]);
+    let mut slot = [0u8; 32];
+    slot[20..32].copy_from_slice(&key[20..32]);
+    (H160::from(addr_bytes), H256::from(slot))
 }

@@ -64,6 +64,10 @@ impl EvBlpPipeline {
         &self.cache
     }
 
+    pub fn cache_arc(&self) -> Arc<TwoLevelCache> {
+        self.cache.clone()
+    }
+
     pub fn cache_config(&self) -> &CacheConfig {
         &self.config.cache
     }

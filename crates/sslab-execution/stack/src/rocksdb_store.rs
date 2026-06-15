@@ -76,6 +76,28 @@ impl ChaseStorage {
         Ok(())
     }
 
+    pub fn get_storage_slot(
+        &self,
+        address: H160,
+        slot: H256,
+    ) -> Result<Option<H256>, StorageError> {
+        Ok(self.storage_slots.get(&(address, slot))?)
+    }
+
+    pub fn put_storage_slot(
+        &self,
+        address: H160,
+        slot: H256,
+        value: H256,
+    ) -> Result<(), StorageError> {
+        if value == H256::default() {
+            let _ = self.storage_slots.remove(&(address, slot))?;
+        } else {
+            self.storage_slots.insert(&(address, slot), &value)?;
+        }
+        Ok(())
+    }
+
     /// Apply EVM state changes and persist them to RocksDB (write-through).
     pub fn persist_applies(&self, applies: Vec<Apply>) -> Result<(), StorageError> {
         for apply in applies {

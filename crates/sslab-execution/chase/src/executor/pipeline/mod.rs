@@ -3,6 +3,8 @@ mod ev_blp;
 mod stages;
 
 #[cfg(test)]
+mod integration_tests;
+#[cfg(test)]
 mod tests;
 
 pub use controller::PipelineController;

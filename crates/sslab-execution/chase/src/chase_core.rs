@@ -14,6 +14,7 @@ use evm::backend::Backend;
 
 type DefaultBackend = CMemoryBackend;
 use std::sync::Arc;
+use parking_lot::Mutex;
 use tracing::warn;
 
 use crate::{
@@ -68,6 +69,8 @@ where
     concurrency_level: usize,
     global_state: Arc<EvmStorage<B>>,
     seer_ctx: Arc<SeerContext>,
+    /// When set, all applied effects during execution are recorded here.
+    effect_collector: Arc<Mutex<Option<Vec<evm::backend::Apply>>>>,
 }
 
 impl<B: Backend + ApplyBackend + Clone + Default + Send + Sync + 'static> ConcurrencyLevelManager<B> {
@@ -84,7 +87,23 @@ impl<B: Backend + ApplyBackend + Clone + Default + Send + Sync + 'static> Concur
             global_state: Arc::new(global_state),
             concurrency_level,
             seer_ctx: Arc::new(seer_ctx),
+            effect_collector: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Execute a single batch and return digests plus all applied state effects.
+    pub async fn execute_batch_with_effects(
+        &self,
+        batch: ExecutableEthereumBatch,
+    ) -> (Vec<BatchDigest>, Vec<evm::backend::Apply>) {
+        *self.effect_collector.lock() = Some(Vec::new());
+        let digests = self._execute(vec![batch]).await;
+        let effects = self.effect_collector.lock().take().unwrap_or_default();
+        (digests, effects)
+    }
+
+    pub fn global_state(&self) -> Arc<EvmStorage<B>> {
+        self.global_state.clone()
     }
 
     pub fn seer_context(&self) -> Arc<SeerContext> {
@@ -342,11 +361,16 @@ impl<B: Backend + ApplyBackend + Clone + Default + Send + Sync + 'static> Concur
         chains: Vec<Vec<FinalizedTransaction>>,
     ) {
         let storage = self.global_state.clone();
+        let collector = self.effect_collector.clone();
         let (send, recv) = tokio::sync::oneshot::channel();
         rayon::spawn(move || {
             chains.into_par_iter().for_each(|chain| {
                 for tx in chain {
-                    storage.apply_local_effect(tx.extract());
+                    let effect = tx.extract();
+                    if let Some(sink) = collector.lock().as_mut() {
+                        sink.extend(effect.clone());
+                    }
+                    storage.apply_local_effect(effect);
                 }
             });
             let _ = send.send(());
@@ -405,17 +429,17 @@ impl<B: Backend + ApplyBackend + Clone + Default + Send + Sync + 'static> Concur
     #[cfg(not(feature = "latency"))]
     pub async fn _concurrent_commit(&self, scheduled_txs: Vec<Vec<FinalizedTransaction>>) {
         let storage = self.global_state.clone();
+        let collector = self.effect_collector.clone();
 
-        // Parallel simulation requires heavy cpu usages.
-        // CPU-bound jobs would make the I/O-bound tokio threads starve.
-        // To this end, a separated thread pool need to be used for cpu-bound jobs.
-        // a new thread is created, and a new thread pool is created on the thread. (specifically, rayon's thread pool is created)
         let (send, recv) = tokio::sync::oneshot::channel();
         rayon::spawn(move || {
             let _storage = &storage;
             for txs_to_commit in scheduled_txs {
                 txs_to_commit.into_par_iter().for_each(|tx| {
                     let effect = tx.extract();
+                    if let Some(sink) = collector.lock().as_mut() {
+                        sink.extend(effect.clone());
+                    }
                     _storage.apply_local_effect(effect)
                 })
             }

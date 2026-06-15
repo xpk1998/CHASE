@@ -78,6 +78,11 @@ impl MemIndexTable {
         self.total_bytes.store(0, Ordering::Relaxed);
         drained
     }
+
+    /// Clone pages without draining (for safe flush attempts).
+    pub fn clone_pages(&self) -> Vec<DeltaPage> {
+        self.pages.read().clone()
+    }
 }
 
 impl std::fmt::Debug for MemIndexTable {

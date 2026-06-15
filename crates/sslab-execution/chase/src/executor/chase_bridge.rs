@@ -1,15 +1,28 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use narwhal_types::BatchDigest;
 use sslab_execution::types::ExecutableEthereumBatch;
-use tracing::warn;
+use tokio::sync::mpsc;
+use tracing::{debug, warn};
 
-use super::cache::{InMemoryStateStore, StateStore, TempBuffer};
+use super::cache::{applies_to_temp_buffer, StateStore, TempBuffer};
 use super::config::EvBlpConfig;
-use super::pipeline::{EvBlpPipeline, PipelineBatch, StageId};
+use super::pipeline::{EvBlpPipeline, PipelineBatch, PipelineController, StageId};
 use crate::chase_core::ConcurrencyLevelManager;
 
-/// Async bridge connecting Chase CDS execution to the EV-BLP pipeline.
+/// Shared pipeline state for concurrent stage workers.
+pub struct SharedPipeline {
+    pub pipeline: Arc<EvBlpPipeline>,
+}
+
+/// Result of P₂ execution passed to P₃.
+struct CommitWork {
+    batch_id: u64,
+    delta_bytes: u64,
+}
+
+/// Async bridge with true three-stage concurrent pipelining.
 pub struct EvBlpChaseBridge<B>
 where
     B: evm::backend::Backend
@@ -21,7 +34,7 @@ where
         + 'static,
 {
     manager: Arc<ConcurrencyLevelManager<B>>,
-    pipeline: EvBlpPipeline,
+    shared: Arc<SharedPipeline>,
 }
 
 impl<B> EvBlpChaseBridge<B>
@@ -36,128 +49,191 @@ where
 {
     pub fn new(manager: ConcurrencyLevelManager<B>, db: Option<Arc<dyn StateStore>>) -> Self {
         let config = EvBlpConfig::from_env();
-        let store = db.unwrap_or_else(|| Arc::new(InMemoryStateStore::default()));
-        let pipeline = EvBlpPipeline::from_config(config, store);
+        let store = db.unwrap_or_else(|| Arc::new(super::cache::InMemoryStateStore::default()));
+        let pipeline = Arc::new(EvBlpPipeline::from_config(config, store));
         Self {
             manager: Arc::new(manager),
-            pipeline,
+            shared: Arc::new(SharedPipeline { pipeline }),
         }
     }
 
     pub fn with_store(manager: ConcurrencyLevelManager<B>, store: Arc<dyn StateStore>) -> Self {
         let config = EvBlpConfig::from_env();
-        let pipeline = EvBlpPipeline::from_config(config, store);
+        let pipeline = Arc::new(EvBlpPipeline::from_config(config, store));
         Self {
             manager: Arc::new(manager),
-            pipeline,
+            shared: Arc::new(SharedPipeline { pipeline }),
         }
     }
 
     pub fn pipeline(&self) -> &EvBlpPipeline {
-        &self.pipeline
+        &self.shared.pipeline
     }
 
-    /// Execute batches through the EV-BLP three-stage pipeline (async).
+    /// Run batches through concurrent P₁/P₂/P₃ workers connected by channels.
     pub async fn execute(&self, batches: Vec<ExecutableEthereumBatch>) -> Vec<BatchDigest> {
-        let mut digests = Vec::with_capacity(batches.len());
-        let mut pending_commit: Vec<PipelineBatch> = Vec::new();
+        let n = batches.len();
+        if n == 0 {
+            return vec![];
+        }
+
+        let (exec_tx, exec_rx) = mpsc::channel::<PipelineBatch>(n);
+        let (commit_tx, commit_rx) = mpsc::channel::<CommitWork>(n);
+        let (result_tx, result_rx) = mpsc::channel::<(u64, BatchDigest)>(n);
+
+        let shared_exec = self.shared.clone();
+        let manager_exec = self.manager.clone();
+        let exec_handle = tokio::spawn(async move {
+            exec_worker(exec_rx, commit_tx, result_tx, shared_exec, manager_exec).await;
+        });
+
+        let shared_commit = self.shared.clone();
+        let commit_handle = tokio::spawn(async move {
+            commit_worker(commit_rx, shared_commit).await;
+        });
+
+        let result_handle = tokio::spawn(async move {
+            let mut results = Vec::new();
+            let mut rx = result_rx;
+            while let Some(item) = rx.recv().await {
+                results.push(item);
+            }
+            results
+        });
 
         for batch in batches {
-            let batch_id = self.pipeline.alloc_batch_id();
-            let mut pipe_batch = PipelineBatch::new(batch_id, batch);
-
-            self.wait_for_window(StageId::Order).await;
-            self.pipeline
+            wait_can_push(self.shared.pipeline.controller(), StageId::Order).await;
+            let batch_id = self.shared.pipeline.alloc_batch_id();
+            let pipe_batch = PipelineBatch::new(batch_id, batch);
+            self.shared
+                .pipeline
                 .controller()
                 .on_batch_enter(StageId::Order, pipe_batch.gas_weight);
-
-            self.wait_for_window(StageId::Exec).await;
-            self.pipeline
-                .controller()
-                .on_batch_enter(StageId::Exec, pipe_batch.gas_weight);
-
-            let mut temp_buffer = TempBuffer::new();
-            let exec_digests = self
-                .manager
-                ._execute(vec![pipe_batch.batch.clone()])
-                .await;
-            let digest = exec_digests
-                .first()
-                .cloned()
-                .unwrap_or_else(|| pipe_batch.digest().clone());
-
-            populate_temp_buffer_from_batch(&mut temp_buffer, &pipe_batch.batch);
-
-            let delta_bytes = temp_buffer.delta_bytes();
-            pipe_batch = pipe_batch.with_delta_bytes(delta_bytes);
-
-            let max_records = self.pipeline.cache_config().deltapage_max_records;
-            let pages = temp_buffer.into_delta_pages(batch_id, batch_id, max_records);
-            self.pipeline.on_batch_exec_complete(batch_id, pages);
-
-            self.pipeline
-                .controller()
-                .on_batch_exit(StageId::Exec, pipe_batch.gas_weight);
-            self.pipeline
-                .controller()
-                .on_batch_exit(StageId::Order, pipe_batch.gas_weight);
-
-            digests.push(digest);
-            pending_commit.push(pipe_batch);
-            self.drain_commit_stage(&mut pending_commit).await;
+            if exec_tx.send(pipe_batch).await.is_err() {
+                break;
+            }
         }
+        drop(exec_tx);
 
-        while !pending_commit.is_empty() {
-            self.drain_commit_stage(&mut pending_commit).await;
-        }
+        let _ = exec_handle.await;
+        let _ = commit_handle.await;
 
-        if let Err(e) = self.pipeline.cache().try_flush_with_retry(3) {
+        let mut results = result_handle.await.unwrap_or_default();
+        results.sort_by_key(|(id, _)| *id);
+
+        if let Err(e) = self.shared.pipeline.cache().try_flush_with_retry(3) {
             warn!(error = %e, "L1 cache flush failed after pipeline completion");
         }
 
-        digests
-    }
-
-    async fn wait_for_window(&self, stage: StageId) {
-        while !self.pipeline.controller().can_push(stage) {
-            tokio::task::yield_now().await;
-        }
-    }
-
-    async fn drain_commit_stage(&self, pending: &mut Vec<PipelineBatch>) {
-        let i = 0;
-        while i < pending.len() {
-            if !self.pipeline.controller().can_push(StageId::Commit) {
-                break;
-            }
-
-            let batch = &pending[i];
-            self.pipeline
-                .controller()
-                .on_batch_enter(StageId::Commit, batch.delta_bytes);
-
-            tracing::debug!(
-                batch_id = batch.batch_id,
-                delta_bytes = batch.delta_bytes,
-                "P₃ commit stage complete"
-            );
-
-            self.pipeline
-                .controller()
-                .on_batch_exit(StageId::Commit, batch.delta_bytes);
-            pending.remove(i);
-        }
+        results.into_iter().map(|(_, d)| d).collect()
     }
 }
 
-fn populate_temp_buffer_from_batch(
-    temp_buffer: &mut TempBuffer,
-    batch: &ExecutableEthereumBatch,
+async fn exec_worker<B>(
+    mut exec_rx: mpsc::Receiver<PipelineBatch>,
+    commit_tx: mpsc::Sender<CommitWork>,
+    result_tx: mpsc::Sender<(u64, BatchDigest)>,
+    shared: Arc<SharedPipeline>,
+    manager: Arc<ConcurrencyLevelManager<B>>,
+) where
+    B: evm::backend::Backend
+        + sslab_execution::evm_storage::backend::ApplyBackend
+        + Clone
+        + Default
+        + Send
+        + Sync
+        + 'static,
+{
+    while let Some(pipe_batch) = exec_rx.recv().await {
+        let batch_id = pipe_batch.batch_id;
+        let gas_weight = pipe_batch.gas_weight;
+
+        // P₁ → P₂ handoff
+        shared
+            .pipeline
+            .controller()
+            .on_batch_exit(StageId::Order, gas_weight);
+
+        wait_can_push(shared.pipeline.controller(), StageId::Exec).await;
+        shared
+            .pipeline
+            .controller()
+            .on_batch_enter(StageId::Exec, gas_weight);
+
+        let visible_up_to = shared.pipeline.completed_batch_id();
+        debug!(batch_id, visible_up_to, "P₂ executing batch");
+
+        let (digests, applies) = manager
+            .execute_batch_with_effects(pipe_batch.batch.clone())
+            .await;
+
+        let digest = digests
+            .first()
+            .cloned()
+            .unwrap_or_else(|| pipe_batch.digest().clone());
+
+        let mut temp_buffer = TempBuffer::new();
+        applies_to_temp_buffer(&applies, &mut temp_buffer);
+        let delta_bytes = temp_buffer.delta_bytes();
+
+        let max_records = shared.pipeline.cache_config().deltapage_max_records;
+        let pages = temp_buffer.into_delta_pages(batch_id, batch_id, max_records);
+        shared.pipeline.on_batch_exec_complete(batch_id, pages);
+
+        shared
+            .pipeline
+            .controller()
+            .on_batch_exit(StageId::Exec, gas_weight);
+
+        let _ = result_tx.send((batch_id, digest.clone())).await;
+        let _ = commit_tx
+            .send(CommitWork {
+                batch_id,
+                delta_bytes,
+            })
+            .await;
+    }
+}
+
+async fn commit_worker(
+    mut commit_rx: mpsc::Receiver<CommitWork>,
+    shared: Arc<SharedPipeline>,
 ) {
-    for (i, _tx) in batch.data().iter().enumerate() {
-        let addr = ethers_core::types::H160::from_low_u64_be(i as u64 + 1);
-        let slot = ethers_core::types::H256::from_low_u64_be(i as u64 + 1);
-        let val = ethers_core::types::H256::from_low_u64_be(i as u64 + 2);
-        temp_buffer.record_write(addr, slot, val);
+    while let Some(work) = commit_rx.recv().await {
+        wait_can_push(shared.pipeline.controller(), StageId::Commit).await;
+        shared
+            .pipeline
+            .controller()
+            .on_batch_enter(StageId::Commit, work.delta_bytes);
+
+        let cache = shared.pipeline.cache_arc();
+        let batch_id = work.batch_id;
+        let delta_bytes = work.delta_bytes;
+
+        let commit_result =
+            tokio::task::spawn_blocking(move || cache.commit_batch(batch_id)).await;
+
+        match commit_result {
+            Ok(Ok(())) => {
+                debug!(batch_id, delta_bytes, "P₃ commit succeeded");
+            }
+            Ok(Err(e)) => {
+                warn!(batch_id, error = %e, "P₃ commit failed, batch retained in L1");
+            }
+            Err(e) => {
+                warn!(batch_id, error = %e, "P₃ commit task panicked");
+            }
+        }
+
+        shared
+            .pipeline
+            .controller()
+            .on_batch_exit(StageId::Commit, work.delta_bytes);
+    }
+}
+
+async fn wait_can_push(controller: &PipelineController, stage: StageId) {
+    while !controller.can_push(stage) {
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
 }

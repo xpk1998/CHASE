@@ -1,3 +1,4 @@
+mod apply_buffer;
 mod delta_page;
 mod l1_cache;
 mod l2_cache;
@@ -8,7 +9,11 @@ mod two_level_cache;
 #[cfg(test)]
 mod tests;
 
-pub use delta_page::{DeltaPage, DeltaRecord, Key, Value, DELTA_PAGE_MAX_RECORDS};
+pub use apply_buffer::{applies_delta_bytes, applies_to_temp_buffer};
+pub use delta_page::{
+    decode_key, decode_value, encode_key, encode_value, DeltaPage, DeltaRecord, Key, Value,
+    DELTA_PAGE_MAX_RECORDS,
+};
 pub use l1_cache::L1Cache;
 pub use l2_cache::L2Cache;
 pub use mem_index_table::MemIndexTable;

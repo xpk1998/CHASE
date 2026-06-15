@@ -43,10 +43,10 @@ pub struct TwoLevelCache {
     l1: L1Cache,
     l2: L2Cache,
     db: Arc<dyn StateStore>,
-    /// Highest batch_id whose execution is complete and visible to subsequent batches.
     completed_batch: AtomicU64,
-    /// Per-batch delta byte counts for W₃ tracking.
     batch_delta_bytes: RwLock<hashbrown::HashMap<u64, u64>>,
+    /// Per-batch delta pages retained until P₃ commit succeeds.
+    pending_batch_pages: RwLock<hashbrown::HashMap<u64, Vec<DeltaPage>>>,
 }
 
 impl TwoLevelCache {
@@ -57,22 +57,22 @@ impl TwoLevelCache {
             db,
             completed_batch: AtomicU64::new(0),
             batch_delta_bytes: RwLock::new(hashbrown::HashMap::new()),
+            pending_batch_pages: RwLock::new(hashbrown::HashMap::new()),
         }
     }
 
-    /// Write DeltaPages from a completed batch execution.
     pub fn write_delta_pages(&self, batch_id: u64, pages: Vec<DeltaPage>) {
         let mut total_bytes = 0u64;
-        for page in pages {
+        for page in &pages {
             total_bytes += page.byte_size();
-            self.l1.write_delta_page(page);
+            self.l1.write_delta_page(page.clone());
         }
         self.batch_delta_bytes
             .write()
             .insert(batch_id, total_bytes);
+        self.pending_batch_pages.write().insert(batch_id, pages);
     }
 
-    /// Mark batch execution complete — state becomes visible to subsequent batches.
     pub fn mark_batch_complete(&self, batch_id: u64) {
         let prev = self.completed_batch.fetch_max(batch_id, Ordering::SeqCst);
         if batch_id > prev {
@@ -84,7 +84,6 @@ impl TwoLevelCache {
         self.completed_batch.load(Ordering::SeqCst)
     }
 
-    /// Read state visible up to `visible_up_to` batch.
     pub fn read(&self, key: &Key, visible_up_to: u64) -> Option<Value> {
         let completed = self.completed_batch.load(Ordering::SeqCst);
         if visible_up_to > completed {
@@ -110,30 +109,62 @@ impl TwoLevelCache {
             .unwrap_or(0)
     }
 
-    /// Async flush frozen L1 tables to L2 + persistent storage.
+    /// P₃: persist a batch's delta pages to L2 + durable store.
+    pub fn commit_batch(&self, batch_id: u64) -> Result<(), String> {
+        let pages = self
+            .pending_batch_pages
+            .write()
+            .remove(&batch_id)
+            .unwrap_or_default();
+
+        let entries: Vec<(Key, Value)> = pages
+            .iter()
+            .flat_map(|page| page.records.iter().map(|r| (r.key, r.value)))
+            .collect();
+
+        if entries.is_empty() {
+            return Ok(());
+        }
+
+        self.db.put_batch(&entries)?;
+        self.l2.insert_batch(entries.iter().copied());
+        Ok(())
+    }
+
+    /// Flush frozen L1 tables to L2 + DB. Failed tables remain in L1.
     pub fn flush_frozen_tables(&self) -> Result<usize, String> {
-        let frozen = self.l1.take_frozen_tables();
-        let mut flushed = 0;
+        let frozen = self.l1.frozen_snapshot();
+        let mut flushed = 0usize;
 
-        for table in &frozen {
-            let pages = table.drain_pages();
-            for page in pages {
-                let entries: Vec<(Key, Value)> = page
-                    .records
-                    .iter()
-                    .map(|r| (r.key, r.value))
-                    .collect();
+        for table in frozen {
+            let pages = table.clone_pages();
+            if pages.is_empty() {
+                self.l1.remove_frozen_table(&table);
+                continue;
+            }
 
-                self.l2.insert_batch(entries.iter().copied());
-                self.db.put_batch(&entries)?;
-                flushed += 1;
+            let entries: Vec<(Key, Value)> = pages
+                .iter()
+                .flat_map(|page| page.records.iter().map(|r| (r.key, r.value)))
+                .collect();
+
+            match self.db.put_batch(&entries) {
+                Ok(()) => {
+                    self.l2.insert_batch(entries.iter().copied());
+                    table.drain_pages();
+                    self.l1.remove_frozen_table(&table);
+                    flushed += pages.len();
+                }
+                Err(e) => {
+                    warn!(error = %e, "frozen L1 table flush failed, table retained");
+                    return Err(e);
+                }
             }
         }
 
         Ok(flushed)
     }
 
-    /// Retry flush on failure — frozen tables are NOT removed from L1 on failure.
     pub fn try_flush_with_retry(&self, max_retries: u32) -> Result<usize, String> {
         let mut last_err = String::new();
         for attempt in 0..max_retries {
@@ -160,7 +191,10 @@ impl TwoLevelCache {
     }
 }
 
-/// Helper to read a decoded H256 value.
-pub fn read_h256(cache: &TwoLevelCache, key: &Key, visible_up_to: u64) -> Option<ethers_core::types::H256> {
+pub fn read_h256(
+    cache: &TwoLevelCache,
+    key: &Key,
+    visible_up_to: u64,
+) -> Option<ethers_core::types::H256> {
     cache.read(key, visible_up_to).map(|v| decode_value(&v))
 }
