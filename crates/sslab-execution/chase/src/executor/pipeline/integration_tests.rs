@@ -102,3 +102,54 @@ fn applies_to_temp_buffer_extracts_storage_writes() {
     applies_to_temp_buffer(&applies, &mut buf);
     assert_eq!(buf.delta_bytes(), 64);
 }
+
+#[test]
+fn pipeline_respects_zeta_max_concurrency() {
+    let ctrl = PipelineController::new(&PipelineConfig {
+        zeta_max: 2,
+        lambda2: 10_000_000,
+        lambda3: 10_000_000,
+    });
+
+    ctrl.on_batch_enter(StageId::Exec, 100);
+    ctrl.on_batch_enter(StageId::Exec, 100);
+    assert!(!ctrl.can_push(StageId::Exec));
+    assert_eq!(ctrl.in_flight_count(StageId::Exec), 2);
+
+    ctrl.on_batch_exit(StageId::Exec, 100);
+    assert!(ctrl.can_push(StageId::Exec));
+}
+
+#[test]
+fn pipeline_backpressure_closes_window_on_overload() {
+    let ctrl = PipelineController::new(&PipelineConfig {
+        zeta_max: 8,
+        lambda2: 1_000,
+        lambda3: 10_000_000,
+    });
+
+    ctrl.on_batch_enter(StageId::Exec, 1_500);
+    ctrl.on_batch_exit(StageId::Order, 100);
+    assert_eq!(ctrl.get_window_size(StageId::Order), 0);
+
+    ctrl.on_batch_exit(StageId::Exec, 1_500);
+    ctrl.on_batch_exit(StageId::Order, 50);
+    assert!(ctrl.get_window_size(StageId::Order) >= 1);
+}
+
+#[test]
+fn lambda_recommendation_from_samples() {
+    use super::calibration::recommend_lambdas;
+    use super::metrics::WorkloadSample;
+
+    let samples: Vec<WorkloadSample> = (0..20)
+        .map(|i| WorkloadSample {
+            gas_weight: 50_000 * (i + 1),
+            delta_bytes: 1024 * (i + 1),
+        })
+        .collect();
+    let rec = recommend_lambdas(&samples, 4);
+    assert!(rec.lambda2 > 0);
+    assert!(rec.lambda3 > 0);
+    assert_eq!(rec.sample_count, 20);
+}

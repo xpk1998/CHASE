@@ -45,8 +45,14 @@ vanilla-kdg-fcw = ["disable-early-detection", "disable-rescheduling", "paralleli
 
 chase = []
 seer = []
+ev-blp = ["chase"]
 
 latency = []
+
+[[bench]]
+name = "ev_blp"
+harness = false
+required-features = ["ev-blp"]
 
 [[bench]]
 name = "chase"

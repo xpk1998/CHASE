@@ -10,7 +10,8 @@ pub use {
     chase_core::{ConcurrencyLevelManager, Chase},
     executor::{
         EvBlpChaseBridge, EvBlpConfig, EvBlpPipeline, EvBlpRuntime, CacheOverlayBackend,
-        L1Visibility, PipelineController, TwoLevelCache,
+        LambdaRecommendation, L1Visibility, PipelineController, PipelineMetrics, recommend_lambdas,
+        TwoLevelCache,
     },
     seer::{SeerConfig, SeerContext},
     types::{SimulatedTransaction, SimulationResult},

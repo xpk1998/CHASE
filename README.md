@@ -82,6 +82,9 @@ cargo test -p sslab-execution-stack --test e2e_integration -- --test-threads=1
 
 # EV-BLP full stack E2E
 CHASE_USE_EV_BLP=1 cargo test -p sslab-execution-stack --test e2e_integration e2e_ev_blp_pipeline_execution -- --test-threads=1
+
+# EV-BLP benchmark + lambda calibration (prints suggested lambda2/lambda3)
+cargo bench -p sslab-execution-chase --features ev-blp --bench ev_blp -- --sample-size 10
 ```
 
 ## How to benchmark?

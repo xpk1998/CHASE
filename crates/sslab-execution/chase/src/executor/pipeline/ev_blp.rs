@@ -5,6 +5,7 @@ use sslab_execution::types::ExecutableEthereumBatch;
 use tracing::{debug, warn};
 
 use super::controller::PipelineController;
+use super::metrics::PipelineMetrics;
 use super::stages::{PipelineBatch, StageId};
 use crate::executor::cache::{StateStore, TempBuffer, TwoLevelCache};
 use crate::executor::config::{CacheConfig, EvBlpConfig, PipelineConfig};
@@ -29,8 +30,8 @@ pub struct EvBlpPipeline {
     controller: Arc<PipelineController>,
     cache: Arc<TwoLevelCache>,
     config: EvBlpConfig,
+    metrics: Option<Arc<PipelineMetrics>>,
     next_batch_id: std::sync::atomic::AtomicU64,
-    /// Last batch whose P₂ execution completed (L1 visibility boundary).
     last_exec_complete: std::sync::atomic::AtomicU64,
 }
 
@@ -40,20 +41,29 @@ impl EvBlpPipeline {
         cache_config: CacheConfig,
         db: Arc<dyn StateStore>,
     ) -> Self {
-        Self {
-            controller: Arc::new(PipelineController::new(&pipeline_config)),
-            cache: Arc::new(TwoLevelCache::new(&cache_config, db)),
-            config: EvBlpConfig {
-                pipeline: pipeline_config,
-                cache: cache_config,
-            },
-            next_batch_id: std::sync::atomic::AtomicU64::new(1),
-            last_exec_complete: std::sync::atomic::AtomicU64::new(0),
-        }
+        Self::from_config(EvBlpConfig {
+            pipeline: pipeline_config,
+            cache: cache_config,
+        }, db)
     }
 
     pub fn from_config(config: EvBlpConfig, db: Arc<dyn StateStore>) -> Self {
-        Self::new(config.pipeline, config.cache, db)
+        Self::from_config_with_metrics(config, db, None)
+    }
+
+    pub fn from_config_with_metrics(
+        config: EvBlpConfig,
+        db: Arc<dyn StateStore>,
+        metrics: Option<Arc<PipelineMetrics>>,
+    ) -> Self {
+        Self {
+            controller: Arc::new(PipelineController::new(&config.pipeline)),
+            cache: Arc::new(TwoLevelCache::new(&config.cache, db)),
+            config,
+            metrics,
+            next_batch_id: std::sync::atomic::AtomicU64::new(1),
+            last_exec_complete: std::sync::atomic::AtomicU64::new(0),
+        }
     }
 
     pub fn controller(&self) -> &PipelineController {
@@ -70,6 +80,18 @@ impl EvBlpPipeline {
 
     pub fn cache_config(&self) -> &CacheConfig {
         &self.config.cache
+    }
+
+    pub fn pipeline_config(&self) -> &PipelineConfig {
+        &self.config.pipeline
+    }
+
+    pub fn metrics(&self) -> Option<&PipelineMetrics> {
+        self.metrics.as_deref()
+    }
+
+    pub fn metrics_arc(&self) -> Option<Arc<PipelineMetrics>> {
+        self.metrics.clone()
     }
 
     pub fn alloc_batch_id(&self) -> u64 {
