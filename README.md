@@ -122,7 +122,7 @@ export CHASE_USE_EXECUTION=1
 # Optional: parallel execution width (default 4)
 export CHASE_CONCURRENCY_LEVEL=4
 
-# Optional: EV-BLP batch-level pipelining (set before node / ChaseStack::open)
+# Optional: EV-BLP batch-level pipelining (P₁ Order → P₂ Exec → P₃ Commit; set before node / ChaseStack::open)
 export CHASE_USE_EV_BLP=1
 export CHASE_PIPELINE_ZETA_MAX=8
 export CHASE_PIPELINE_LAMBDA2=10000000
