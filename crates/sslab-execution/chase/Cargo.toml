@@ -23,6 +23,7 @@ rayon = "1.8.0"
 nohash-hasher = "0.2.0"
 hashbrown = { version = "0.14.2", features = ["inline-more", "default"] }
 incr_stats = { version = "1.0.2", optional = true }
+lru.workspace = true
 
 [dev-dependencies]
 ethers = "^2.0.0"
@@ -44,8 +45,14 @@ vanilla-kdg-fcw = ["disable-early-detection", "disable-rescheduling", "paralleli
 
 chase = []
 seer = []
+ev-blp = ["chase"]
 
 latency = []
+
+[[bench]]
+name = "ev_blp"
+harness = false
+required-features = ["ev-blp"]
 
 [[bench]]
 name = "chase"

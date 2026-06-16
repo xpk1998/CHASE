@@ -43,6 +43,14 @@ export CHASE_USE_EXECUTION=1
 # Optional: parallel execution width (default 4)
 export CHASE_CONCURRENCY_LEVEL=4
 
+# Optional: EV-BLP batch-level pipelining (P₁ Order → P₂ Exec → P₃ Commit)
+export CHASE_USE_EV_BLP=1
+export CHASE_PIPELINE_ZETA_MAX=8
+export CHASE_PIPELINE_LAMBDA2=10000000
+export CHASE_PIPELINE_LAMBDA3=67108864
+export CHASE_CACHE_L1_CAPACITY_MB=256
+export CHASE_CACHE_L2_LRU_SIZE_MB=1024
+
 # Start primary (store path is the Narwhal node store)
 narwhal-node primary -s /path/to/store ...
 ```
@@ -66,8 +74,17 @@ export RUSTFLAGS="-C linker=g++"
 # CHASE CDS + Seer unit tests
 cargo test -p sslab-execution-chase --features chase
 
+# EV-BLP executor tests
+cargo test -p sslab-execution-chase --features chase executor::
+
 # Full stack E2E (Tusk → CHASE CDS → RocksDB)
 cargo test -p sslab-execution-stack --test e2e_integration -- --test-threads=1
+
+# EV-BLP full stack E2E
+CHASE_USE_EV_BLP=1 cargo test -p sslab-execution-stack --test e2e_integration e2e_ev_blp_pipeline_execution -- --test-threads=1
+
+# EV-BLP benchmark + lambda calibration (prints suggested lambda2/lambda3)
+cargo bench -p sslab-execution-chase --features ev-blp --bench ev_blp -- --sample-size 10
 ```
 
 ## How to benchmark?

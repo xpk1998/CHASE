@@ -4,18 +4,19 @@ use std::sync::Arc;
 use ethers_core::types::{H160, U256, U64};
 use evm::backend::MemoryVicinity;
 use parking_lot::RwLock;
-use sslab_execution_chase::Chase;
+use sslab_execution::evm_storage::EvmStorage;
+use sslab_execution_chase::{CacheOverlayBackend, Chase, EvBlpConfig, EvBlpRuntime};
 use tracing::info;
 
 use crate::execution_state::ChaseExecutionState;
-use crate::layered_backend::{PersistableCMemoryBackend, PersistableConcurrentEVMStorage};
+use crate::layered_backend::{PersistableCMemoryBackend, StackBackend, StackEvmStorage};
+use crate::rocksdb_state_store::RocksDbStateStore;
 use crate::rocksdb_store::ChaseStorage;
-use sslab_execution::evm_storage::EvmStorage;
 
 /// Builder for the full Tusk → Chase → RocksDB stack.
 pub struct ChaseStack {
     pub storage: Arc<RwLock<ChaseStorage>>,
-    pub evm_storage: PersistableConcurrentEVMStorage,
+    pub evm_storage: StackEvmStorage,
     pub execution_state: ChaseExecutionState,
 }
 
@@ -24,14 +25,27 @@ impl ChaseStack {
     pub fn open(db_path: &Path, concurrency_level: usize) -> Result<Self, crate::rocksdb_store::StorageError> {
         let storage = ChaseStorage::open(db_path)?;
         let vicinity = default_vicinity();
-        let backend = PersistableCMemoryBackend::new(vicinity, storage.clone());
+
+        let ev_blp_runtime = if EvBlpConfig::is_enabled() {
+            let store = Arc::new(RocksDbStateStore::new(storage.clone()));
+            Some(EvBlpRuntime::new(store))
+        } else {
+            None
+        };
+
+        let inner_backend = PersistableCMemoryBackend::new(vicinity, storage.clone());
+        let visibility = ev_blp_runtime.as_ref().map(|r| r.visibility.clone());
+        let backend: StackBackend = CacheOverlayBackend::new(inner_backend, visibility);
+
         let evm_storage = EvmStorage::new(U64::from(9), backend, Default::default());
         let chase = Chase::new(evm_storage.clone(), concurrency_level);
-        let execution_state = ChaseExecutionState::new(chase, storage.clone());
+        let execution_state = ChaseExecutionState::new(chase, storage.clone(), ev_blp_runtime);
 
+        let ev_blp = EvBlpConfig::is_enabled();
         info!(
             ?db_path,
             concurrency_level,
+            ev_blp,
             last_index = storage.read().last_executed_sub_dag_index().unwrap_or(0),
             "Chase stack initialized (Tusk consensus + CHASE CDS + RocksDB)"
         );
