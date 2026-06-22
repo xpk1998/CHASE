@@ -10,7 +10,7 @@ mod two_level_cache;
 #[cfg(test)]
 mod tests;
 
-pub use apply_buffer::{applies_delta_bytes, applies_to_temp_buffer};
+pub use apply_buffer::applies_to_temp_buffer;
 pub use cache_overlay::{CacheOverlayBackend, L1Visibility};
 pub use delta_page::{
     decode_key, decode_value, encode_key, encode_value, DeltaPage, DeltaRecord, Key, Value,
