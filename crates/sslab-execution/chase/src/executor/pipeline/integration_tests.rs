@@ -1,71 +1,31 @@
-use std::sync::Arc;
-
 use evm::backend::Apply;
-use ethers_core::types::U256;
-use narwhal_types::BatchDigest;
-use sslab_execution::types::{EthereumTransaction, ExecutableEthereumBatch};
+use ethers_providers::{MockProvider, Provider};
+use sslab_execution::{
+    utils::{
+        smallbank_contract_benchmark::concurrent_evm_storage,
+        test_utils::{SmallBankTransactionHandler, DEFAULT_CHAIN_ID},
+    },
+};
 
 use super::controller::PipelineController;
-use super::ev_blp::{BatchExecutor, EvBlpPipeline};
-use super::stages::{PipelineBatch, StageId};
-use crate::executor::cache::{applies_to_temp_buffer, InMemoryStateStore, TempBuffer};
-use crate::executor::config::{EvBlpConfig, PipelineConfig};
+use super::stages::StageId;
+use crate::chase_core::ConcurrencyLevelManager;
+use crate::executor::cache::{applies_to_temp_buffer, TempBuffer};
+use crate::executor::chase_bridge::EvBlpChaseBridge;
+use crate::executor::config::PipelineConfig;
 
-struct MockExecutor {
-    exec_count: std::sync::atomic::AtomicUsize,
+fn smallbank_batches(count: usize) -> Vec<sslab_execution::types::ExecutableEthereumBatch> {
+    let provider = Provider::<MockProvider>::new(MockProvider::default());
+    let handler = SmallBankTransactionHandler::new(provider, DEFAULT_CHAIN_ID);
+    handler.create_batches(1, count, 0.0, 100_000)
 }
 
-impl BatchExecutor for MockExecutor {
-    fn execute_batch(
-        &self,
-        batch: &ExecutableEthereumBatch,
-        temp_buffer: &mut TempBuffer,
-        _visible_up_to: u64,
-    ) -> BatchDigest {
-        self.exec_count
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        for (i, _tx) in batch.data().iter().enumerate() {
-            let addr = ethers_core::types::H160::from_low_u64_be(i as u64 + 1);
-            let slot = ethers_core::types::H256::from_low_u64_be(i as u64 + 1);
-            let val = ethers_core::types::H256::from_low_u64_be(i as u64 + 2);
-            temp_buffer.record_write(addr, slot, val);
-        }
-        *batch.digest()
-    }
-
-    fn commit_batch(&self, _batch: &PipelineBatch) -> Result<(), String> {
-        Ok(())
-    }
-}
-
-fn make_batches(count: usize) -> Vec<ExecutableEthereumBatch> {
-    (0..count)
-        .map(|i| {
-            let mut tx = EthereumTransaction::default();
-            tx.0.set_gas(U256::from(21_000u64));
-            ExecutableEthereumBatch::new(
-                vec![tx],
-                BatchDigest::new([i as u8; 32]),
-            )
-        })
-        .collect()
-}
-
-#[test]
-fn pipeline_processes_multiple_batches() {
-    let store = Arc::new(InMemoryStateStore::default());
-    let pipeline = EvBlpPipeline::from_config(EvBlpConfig::default(), store);
-    let executor = MockExecutor {
-        exec_count: std::sync::atomic::AtomicUsize::new(0),
-    };
-
-    let batches = make_batches(3);
-    let digests = pipeline.process_batches(batches, &executor);
+#[tokio::test]
+async fn pipeline_processes_multiple_batches() {
+    let manager = ConcurrencyLevelManager::new(concurrent_evm_storage(), 2);
+    let bridge = EvBlpChaseBridge::new(manager, None);
+    let digests = bridge.execute(smallbank_batches(3)).await;
     assert_eq!(digests.len(), 3);
-    assert_eq!(
-        executor.exec_count.load(std::sync::atomic::Ordering::Relaxed),
-        3
-    );
 }
 
 #[test]
